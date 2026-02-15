@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMAI Snake 3D - Multiplayer Voice</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; touch-action: none; font-family: monospace; }
+        canvas { display: block; }
+        .ui-panel { position: fixed; z-index: 100; pointer-events: auto; background: rgba(0, 20, 0, 0.8); border: 1px solid #0f0; padding: 15px; color: #0f0; border-radius: 10px; }
+        .speaking { box-shadow: 0 0 15px #4ade80; border-color: #4ade80; }
+    </style>
+</head>
+<body>
+
+    <div class="ui-panel top-4 right-4 w-64">
+        <h2 class="text-center font-bold border-b border-green-900 mb-2">שרת SMAI פעיל</h2>
+        <div id="status">מתחבר למערכת...</div>
+        <div id="players-list" class="mt-2 text-xs"></div>
+    </div>
+
+    <div class="ui-panel bottom-4 left-4">
+        <button id="start-btn" class="bg-green-600 text-black px-4 py-2 font-bold hover:bg-white transition-all">הפעל מצלמה ומיקרופון</button>
+    </div>
+
+    <video id="webcam" class="fixed bottom-4 right-4 w-32 h-24 border border-green-500 rounded hidden" autoplay playsinline muted></video>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // הגדרות Firebase - תחליף בנתונים שלך!
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // משתנים גלובליים
+        let myId, myPeer, localStream;
+        let players = {};
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        
+        // אתחול Three.js
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+        scene.add(new THREE.GridHelper(100, 50, 0x004400, 0x002200));
+        camera.position.set(0, 20, 20);
+        camera.lookAt(0,0,0);
+
+        // חיבור לשרת ה-Voice (PeerJS)
+        async function startSystem() {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+            document.getElementById('webcam').srcObject = localStream;
+            document.getElementById('webcam').classList.remove('hidden');
+
+            const userCredential = await signInAnonymously(auth);
+            myId = userCredential.user.uid;
+            
+            myPeer = new Peer(myId);
+            
+            myPeer.on('open', id => {
+                document.getElementById('status').innerText = "מחובר: " + id.slice(0,5);
+                setupMultiplayer();
+            });
+
+            myPeer.on('call', call => {
+                call.answer(localStream);
+                call.on('stream', remoteStream => playAudio(remoteStream));
+            });
+        }
+
+        function setupMultiplayer() {
+            const playersCol = collection(db, "players");
+            
+            // עדכון המיקום שלי
+            window.addEventListener('mousemove', (e) => {
+                const x = (e.clientX / window.innerWidth) * 40 - 20;
+                const z = (e.clientY / window.innerHeight) * 40 - 20;
+                setDoc(doc(db, "players", myId), {
+                    x, z, id: myId, lastSeen: serverTimestamp()
+                });
+            });
+
+            // האזנה לשחקנים אחרים
+            onSnapshot(playersCol, (snapshot) => {
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    if (data.id !== myId) {
+                        if (!players[data.id]) {
+                            createNewPlayer(data);
+                            myPeer.call(data.id, localStream).on('stream', s => playAudio(s));
+                        }
+                        updatePlayerPos(data);
+                    }
+                });
+            });
+        }
+
+        function createNewPlayer(data) {
+            const geo = new THREE.BoxGeometry(1, 1, 1);
+            const mat = new THREE.MeshPhongMaterial({ color: 0x00ff00 });
+            const mesh = new THREE.Mesh(geo, mat);
+            scene.add(mesh);
+            players[data.id] = mesh;
+        }
+
+        function updatePlayerPos(data) {
+            if (players[data.id]) {
+                players[data.id].position.set(data.x, 0.5, data.z);
+            }
+        }
+
+        function playAudio(stream) {
+            const audio = new Audio();
+            audio.srcObject = stream;
+            audio.play();
+        }
+
+        document.getElementById('start-btn').onclick = startSystem;
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
